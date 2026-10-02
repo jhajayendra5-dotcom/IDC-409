@@ -11,7 +11,7 @@ partially observed. The framework approximates the reduced dynamics of
 r(t) by a Generalized Langevin Equation (GLE) with memory and temporally
 dependent noise, estimated entirely from data:
 
-    dr/dt = Omega*r(t) - int_0^t K(t-tau) r(tau) dtau
+    dr/dt = Omega*r(t) - int_0^t K(t-tau) r(tau) dtau 
             + sum_j Omega_j x_j(t) + eta(t)
 
 K is the memory kernel, x_j(t) are observed exogenous drives (network

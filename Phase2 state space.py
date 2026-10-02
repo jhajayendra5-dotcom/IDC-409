@@ -1,50 +1,49 @@
 """
-PHASE 2 — STATE-SPACE CONSTRUCTION
+PHASE 2 — OBSERVED STATE CONSTRUCTION AND STATIONARITY CHECK
 
-Physical and mathematical role
---------------------------------
-The Mori-Zwanzig projection formalism requires an a priori choice of
-"relevant" (slow) variables onto which the full microscopic dynamics
-are projected; every other degree of freedom is subsequently
-integrated out into the memory kernel and noise term of the GLE. This
-phase defines that relevant subspace for the currency pair as the
-two-component state vector
-
-    s(t) = [ r(t), sigma(t) ]
+Role
+----
+Mori-Zwanzig projection presupposes a choice of observed variables;
+every other degree of freedom then enters the reduced dynamics only
+through the memory kernel and the noise. This phase defines the observed
+variables of the currency pair:
 
     r(t)     = ln( P(t) / P(t-1) )
     sigma(t) = std( r(t-w+1 : t) ),  w = VOLATILITY_WINDOW
 
-r(t), the log-return, is the additive, approximately stationary
-observable whose dynamics the GLE governs; log-differencing rather
-than raw price is used because price is a non-stationary (integrated)
-process, which is incompatible with the implicit stationarity
-assumption underlying the GLE's fluctuation-dissipation structure.
+The pair [r(t), sigma(t)] is not presumed Markovian. The dynamics of
+r(t) are non-Markovian, and the memory is carried explicitly by the
+lagged terms of Phase 4. sigma(t) is a summary of the recent
+second-moment history of r(t): a nonlinear function of recent returns,
+supplied as an additional observed variable.
 
-sigma(t), the trailing realized volatility, is the minimal auxiliary
-variable required for s(t) to be approximately Markovian: r(t) alone
-is not, since its conditional variance depends on recent history
-(volatility clustering), whereas the pair [r(t), sigma(t)] jointly
-captures first- and second-moment state.
+Log-returns are used because price is an integrated (unit-root)
+process, whereas r(t) can have statistics that do not depend on t
+(stationarity), which fixed-coefficient estimation requires.
+Stationarity is a property of a steady state, not of equilibrium: a
+driven, dissipative system can sustain a stationary non-equilibrium
+steady state with nonzero probability currents and entropy production.
+The ADF test below checks stationarity only.
 
 Output: state_space.csv (date, price, r, sigma)
 
 Synthetic fallback
---------------------
-In the absence of a live price feed, synthetic_universe() generates a
-return series from a closed-form, fully known data-generating process,
-so downstream estimation can be validated against ground truth:
+------------------
+When no live price feed is available, synthetic_universe() generates a
+test process whose ground truth is known, so that downstream estimation
+can be checked against it. It is a test fixture, not a model of any
+market:
 
-    r(t) = K1*r(t-1) + sum_i Omega_i*f_i(t-1) + eta(t)
-    eta(t) = sqrt(h(t))*z(t),         z(t) ~ N(0,1)
-    h(t)   = omega + alpha*r(t-1)^2 + beta*h(t-1)     [GARCH(1,1)]
+    r(t)   = sum_{k=1}^{q} K_k r(t-k) + sum_i Omega_i f_i(t-1) + eta(t)
+    K_k    = K_1 * 0.5^(k-1),   q = NUM_TRUE_MEMORY_LAGS_DEFAULT
+    eta(t) = sqrt(h(t)) z(t),   z(t) ~ N(0,1)
+    h(t)   = omega + alpha r(t-1)^2 + beta h(t-1)       [GARCH(1,1)]
 
-where f_i(t) are independent latent factor processes, a subset of
-which are assigned nonzero true coupling Omega_i while the remainder
-are pure noise. This reproduces, by construction, the network-plus-
-memory-plus-noise structure the later phases are built to recover, and
-the GARCH(1,1) recursion reproduces the volatility clustering that is
-empirically near-universal in currency return series.
+The f_i(t) are independent latent drives, a subset with nonzero
+coupling Omega_i and the rest pure noise. The drives act on r(t) but r
+does not act back on them; this directed coupling breaks the
+time-reversal symmetry of the joint (r, f) process, which is the
+property Phase 5 measures.
 """
 
 import numpy as np
@@ -79,7 +78,9 @@ def synthetic_universe(start: str, end: str, seed: int = None):
     n_true = min(cfg.NUM_TRULY_COUPLED_DEFAULT, len(names))
     true_coupled = names[:n_true]
     coupling = {name: rng.choice([-1, 1]) * rng.uniform(0.3, 0.9) for name in true_coupled}
-    k1_true = rng.uniform(0.05, 0.2)
+    n_lags = cfg.NUM_TRUE_MEMORY_LAGS_DEFAULT
+    k1_true = rng.uniform(0.15, 0.30)
+    kernel_true = k1_true * 0.5 ** np.arange(n_lags)   # decaying multi-lag memory kernel
 
     omega_g, alpha_g, beta_g = 1e-6, 0.08, 0.88
     var = np.zeros(n)
@@ -89,14 +90,16 @@ def synthetic_universe(start: str, end: str, seed: int = None):
     for t in range(1, n):
         var[t] = omega_g + alpha_g * r[t - 1] ** 2 + beta_g * var[t - 1]
         coupling_term = sum(coupling[name] * factors[name][t - 1] for name in true_coupled)
-        r[t] = k1_true * r[t - 1] + coupling_term + np.sqrt(var[t]) * eps[t]
+        memory_term = sum(kernel_true[k] * r[t - 1 - k] for k in range(n_lags) if t - 1 - k >= 0)
+        r[t] = memory_term + coupling_term + np.sqrt(var[t]) * eps[t]
 
     price = 1.0 * np.exp(np.cumsum(r))
     price_series = pd.Series(price, index=dates, name="price")
     factors_df = pd.DataFrame(factors, index=dates)
 
     print(f"[phase2] synthetic ground truth (demo mode only): "
-          f"k1={k1_true:.4f}, coupling={coupling}")
+          f"memory kernel K={np.round(kernel_true, 4).tolist()}, "
+          f"coupling={ {k: round(float(v), 4) for k, v in coupling.items()} }")
     return price_series, factors_df
 
 
@@ -125,6 +128,15 @@ def main():
     print(f"[phase2] source = {source}  |  rows = {len(state)}")
     print(state.head())
     print(state[["r", "sigma"]].describe())
+
+    adf_stat, adf_p = cfg.check_stationarity(state["r"])
+    print(f"\n[phase2] ADF stationarity test on r(t): statistic={adf_stat:.4f}, p={adf_p:.4g}")
+    if adf_p < 0.05:
+        print("[phase2] unit-root null rejected -- r(t) is consistent with the "
+              "time-translation invariance required for fixed-coefficient estimation.")
+    else:
+        print("[phase2] unit-root null NOT rejected -- reassess the return "
+              "transform before proceeding to Phase 3.")
 
 
 if __name__ == "__main__":

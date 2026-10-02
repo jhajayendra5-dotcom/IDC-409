@@ -1,36 +1,41 @@
 """
-PHASE 3 — NETWORK-NEIGHBOR AND EXOGENOUS-FORCING FEATURE CONSTRUCTION
+PHASE 3 — OBSERVED DRIVES: NETWORK-NEIGHBOR AND NEWS FEATURE CONSTRUCTION
 
-Physical and mathematical role
---------------------------------
-In the network formulation, the currency pair is one node i of a graph
-whose other nodes j are candidate coupled instruments, and whose
-exogenous forcing is the flow of public information. The full,
-unprojected equation of motion for node i takes the form
+Role
+----
+The currency is an open system: its returns are influenced by other
+instruments and by information flow that it does not itself determine.
+These are the exogenous drives x_j(t) of the GLE. This phase assembles
+the candidate drive set: for every candidate neighbor j, its return
+r_j(t), by the same log-difference transform used for the currency in
+Phase 2; and for every news topic m, a daily pair
+(count_m(t), sentiment_m(t)).
 
-    ds_i/dt = F(s_i) + sum_j A_ij * G(s_i, s_j) + xi_i(t)
+Nothing is assumed here about which drives couple to the currency or
+about the form of the coupling. The joint dynamics of the full system,
+including its unobserved degrees of freedom, is not specified, and
+neither equilibrium between the currency and its drives nor a Markovian
+joint state is assumed. Coupling strength is estimated in Phase 4, which
+selects from the complete candidate set { r_j(t) } union { news_m(t) }
+supplied here.
 
-This phase materializes the observable side of the coupling sum: for
-every candidate neighbor j, its return series r_j(t) is computed by
-the identical log-difference transform used for the currency pair
-itself in Phase 2, and for every news topic m, a daily scalar pair
-(count_m(t), sentiment_m(t)) is computed as a proxy for the exogenous
-forcing acting on node i through information channel m.
+News count and sentiment enter as exogenous scalar channels: external
+driving with no state equation of their own in this formulation, and so
+they enter the design matrix in the same way as a same-day neighbor
+return.
 
-No claim is made here about which A_ij are nonzero: coupling strength
-is not estimated until Phase 4. This phase supplies only the complete
-candidate feature set { r_j(t) } union { news_m(t) } from which the
-sparse regression in Phase 4 selects.
-
-News count and sentiment are treated as parallel exogenous scalar
-channels rather than as additional network nodes with their own
-dynamical state, because in this formulation news acts as a forcing
-term on the currency node, not as a self-propagating dynamical
-variable; it therefore enters the design matrix identically to a
-same-day neighbor return.
+Cointegration diagnostic
+------------------------
+This phase also tests each neighbor's price LEVEL for an Engle-Granger
+cointegrating relationship with the currency's price level
+(phase1_config.check_cointegration): whether some linear combination of
+the two non-stationary series is itself stationary. This is a diagnostic
+of the data only. The return-based model of Phase 4 neither assumes nor
+imposes a cointegrating (error-correction) relation.
 
 Output: features.csv (date, r, sigma, <name>_r ..., news_<topic>_sent,
         news_<topic>_count ...)
+        cointegration_report.csv (neighbor, eg_statistic, eg_pvalue)
 """
 
 import os
@@ -39,13 +44,17 @@ import pandas as pd
 import phase1_config as cfg
 
 
-def fetch_real_neighbor(ticker: str, dates: pd.DatetimeIndex) -> pd.Series:
+def fetch_real_neighbor_level(ticker: str, dates: pd.DatetimeIndex) -> pd.Series:
     import yfinance as yf
     df = yf.download(ticker, start=dates.min(), end=dates.max(), progress=False)
     if df.empty:
         raise ValueError("empty")
-    s = np.log(df["Close"] / df["Close"].shift(1))
-    return s.reindex(dates).rename(ticker)
+    return df["Close"].reindex(dates).rename(ticker)
+
+
+def fetch_real_neighbor(ticker: str, dates: pd.DatetimeIndex) -> pd.Series:
+    level = fetch_real_neighbor_level(ticker, dates)
+    return np.log(level / level.shift(1))
 
 
 def load_synthetic_factors(dates: pd.DatetimeIndex):
@@ -63,33 +72,64 @@ def resolve_neighbor_list():
             for i in range(cfg.NUM_SYNTHETIC_NEIGHBORS_DEFAULT)]
 
 
-def build_neighbor_features(state: pd.DataFrame) -> pd.DataFrame:
+def build_neighbor_features(state: pd.DataFrame):
+    """Returns (feature_df, levels). feature_df carries the return
+    series used downstream by Phase 4's design matrix. levels carries
+    the raw price-level series for every neighbor fetched from a real
+    data source (not the synthetic fallback, which has no analogous
+    price level), for use by the cointegration diagnostic below."""
     dates = pd.DatetimeIndex(state["date"])
     out = state.set_index("date")[["r", "sigma"]].copy()
     out.index = dates
 
     synthetic_factors = load_synthetic_factors(dates)
+    levels = {}
 
     for entry in resolve_neighbor_list():
         name, ticker = entry["name"], entry.get("ticker")
-        s, source = None, None
+        s, level, source = None, None, None
         if ticker:
             try:
-                s = fetch_real_neighbor(ticker, dates)
-                if s.isna().mean() > 0.3:
+                level = fetch_real_neighbor_level(ticker, dates)
+                if level.isna().mean() > 0.3:
                     raise ValueError("too many NaNs")
+                s = np.log(level / level.shift(1))
                 source = "real data source"
             except Exception:
-                s = None
+                s, level = None, None
         if s is None:
             if synthetic_factors is not None and name in synthetic_factors.columns:
                 s, source = synthetic_factors[name], "synthetic (demo ground-truth factor)"
             else:
                 s, source = pd.Series(np.zeros(len(dates)), index=dates), "unavailable -> zero-filled"
         out[f"{name}_r"] = s.reindex(dates).ffill().fillna(0.0)
+        if level is not None:
+            levels[name] = level.reindex(dates).ffill()
         print(f"[phase3] neighbor '{name}' -> {source}")
 
-    return out
+    return out, levels
+
+
+def run_cointegration_diagnostics(state: pd.DataFrame, levels: dict):
+    """Engle-Granger cointegration test (phase1_config.check_cointegration)
+    between the currency's own price level and every neighbor for which
+    a real price-level series was obtained. Not run against the
+    synthetic fallback, whose data-generating process is specified
+    directly on returns and has no corresponding notion of a
+    cointegrating price-level relationship."""
+    if not levels:
+        print("[phase3] cointegration diagnostic skipped -- no real price-level "
+              "series available (synthetic-data mode has no analogous quantity).")
+        return
+    currency_level = state.set_index("date")["price"]
+    results = []
+    for name, level in levels.items():
+        stat, pvalue = cfg.check_cointegration(currency_level, level)
+        results.append({"neighbor": name, "eg_statistic": stat, "eg_pvalue": pvalue})
+        print(f"[phase3] cointegration (Engle-Granger), currency vs '{name}': "
+              f"statistic={stat:.4f}, p={pvalue:.4g}")
+    pd.DataFrame(results).to_csv("cointegration_report.csv", index=False)
+    print("[phase3] saved cointegration_report.csv")
 
 
 def resolve_news_categories():
@@ -167,13 +207,15 @@ def build_news_features(dates: pd.DatetimeIndex) -> pd.DataFrame:
 
 def main():
     state = pd.read_csv("state_space.csv", parse_dates=["date"])
-    feat = build_neighbor_features(state)
+    feat, levels = build_neighbor_features(state)
     news = build_news_features(feat.index)
     full = feat.join(news).reset_index().rename(columns={"index": "date"})
     full.to_csv("features.csv", index=False)
 
     print(f"[phase3] final feature table: {full.shape[0]} rows x {full.shape[1]} cols")
     print(full.columns.tolist())
+
+    run_cointegration_diagnostics(state, levels)
 
 
 if __name__ == "__main__":

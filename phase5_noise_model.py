@@ -12,13 +12,14 @@ process with Student-t innovations:
     eta(t) = sqrt(h(t)) * z(t),           z(t) ~ standardized Student-t(nu)
     h(t)   = omega + alpha*eta(t-1)^2 + beta*h(t-1)
 
-h(t) is the conditional variance. alpha+beta governs the decay of the
-autocorrelation of eta^2, i.e. the temporal dependence of the noise in
-second order (volatility clustering); alpha+beta -> 1 is long memory in
-volatility. The degrees of freedom nu set the tail weight (nu -> 30 is
-near-Gaussian; nu of roughly 4-8 is pronounced excess kurtosis). The
-finite-order recursion is an approximation to the noise's temporal
-dependence, not a claim about its exact form.
+h(t) is the conditional variance. alpha+beta governs the persistence
+of the noise's second-order dependence (volatility clustering);
+alpha+beta close to 1 indicates extremely persistent conditional
+variance and a near-IGARCH specification, but does not by itself prove
+asymptotic long memory. The degrees of freedom nu set the tail weight
+(nu -> 30 is near-Gaussian; nu of roughly 4-8 is pronounced excess
+kurtosis). The finite-order recursion is an approximation to the
+noise's temporal dependence, not a claim about its exact form.
 
 Part B — irreversibility (entropy-production) diagnostic
 --------------------------------------------------------
@@ -192,8 +193,9 @@ def main():
     alpha = res.params.get("alpha[1]", np.nan)
     beta = res.params.get("beta[1]", np.nan)
     print(f"\n[phase5] GARCH persistence (alpha+beta) = {alpha + beta:.4f}")
-    print("[phase5] (values close to 1 => long memory in the noise's second-order "
-          "dependence, i.e. strong volatility clustering)")
+    print("[phase5] (values close to 1 => extremely persistent conditional "
+          "variance / near-IGARCH behavior; this does not by itself prove "
+          "asymptotic long memory)")
 
     nu = res.params.get("nu", np.nan)
     print(f"[phase5] Student-t degrees of freedom (nu) = {nu:.2f}")

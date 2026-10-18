@@ -11,7 +11,7 @@ partially observed. The framework approximates the reduced dynamics of
 r(t) by a Generalized Langevin Equation (GLE) with memory and temporally
 dependent noise, estimated entirely from data:
 
-    dr/dt = Omega*r(t) - int_0^t K(t-tau) r(tau) dtau 
+    dr/dt = Omega*r(t) - int_0^t K(t-tau) r(tau) dtau
             + sum_j Omega_j x_j(t) + eta(t)
 
 K is the memory kernel, x_j(t) are observed exogenous drives (network
@@ -47,8 +47,8 @@ inputs:
 
 Functions
 ---------
-choose_lag_order() selects the memory depth p by Akaike Information
-Criterion applied to r(t) alone -- a scalar approximation to full VARX
+choose_lag_order() selects the memory depth p by conditional ElasticNet cross-validation
+CV error of the full conditional model, using the same time-series
 order selection, justified because at daily granularity the own-process
 autocorrelation structure dominates lag-order identifiability.
 
@@ -179,7 +179,7 @@ VOLATILITY_WINDOW = 5
 # ── model hyperparameters (shared by Phase 4 and Phase 7 -- one grid,
 #    fit once, no inconsistency between the candidate fit and the
 #    backtest refits) ──────────────────────────────────────────────────
-MAX_LAG = 5
+MAX_LAG = 10
 ELASTICNET_ALPHAS = np.logspace(-6, -1, 30)
 # Concentrated toward the L1 end of the mixing range: the active set
 # is interpreted as the estimated network topology (Phase 4), and a
@@ -216,15 +216,47 @@ NEWS_API_LOOKBACK_WARNING = (
 # ── shared feature-matrix builders and estimators (the single source
 #    of truth used identically by phases 4, 6, and 7) ──────────────────
 
-def choose_lag_order(r: pd.Series, max_lag: int = MAX_LAG) -> int:
-    """AIC-based lag order for the memory kernel, from r's own history.
-    Approximate: ignores exogenous features, which keeps this a cheap
-    O(max_lag) scan instead of a full VARX order search."""
-    from statsmodels.tsa.ar_model import ar_select_order
-    sel = ar_select_order(r.values, maxlag=max_lag, ic="aic")
-    p = len(sel.ar_lags) if sel.ar_lags else 1
-    return max(1, min(p, max_lag))
+def choose_lag_order(df: pd.DataFrame, max_lag: int = MAX_LAG) -> int:
+    """Select memory depth using the full conditional ElasticNet model.
 
+    Each candidate p=1,...,max_lag is evaluated using the same standardized
+    ElasticNetCV specification used by Phase 4. TimeSeriesSplit preserves
+    temporal ordering, so validation observations never precede their
+    corresponding training window.
+
+    The selected p minimizes the best cross-validated mean squared error
+    available to the ElasticNet hyperparameter search.
+    """
+    results = []
+
+    for p in range(1, max_lag + 1):
+        X, y, _ = build_design_matrix(df, p)
+
+        if len(X) <= ELASTICNET_CV_SPLITS + 1:
+            continue
+
+        pipeline = make_scaled_elasticnet_pipeline()
+        pipeline.fit(X.values, y.values)
+
+        model = pipeline.named_steps["model"]
+        cv_mse = float(np.min(np.mean(model.mse_path_, axis=2)))
+        results.append((p, cv_mse))
+
+    if not results:
+        raise ValueError("No valid lag order could be evaluated.")
+
+    results.sort(key=lambda item: item[1])
+    best_p, best_mse = results[0]
+
+    print("[lag-selection] conditional ElasticNet CV MSE by p:")
+    for p, mse in results:
+        print(f"    p={p:2d}  CV_MSE={mse:.8e}")
+    print(
+        f"[lag-selection] selected p = {best_p} "
+        f"(CV_MSE={best_mse:.8e})"
+    )
+
+    return int(best_p)
 
 def build_design_matrix(df: pd.DataFrame, p: int):
     """Target: next-day return, y(t) = r(t+1). Features: own lags
@@ -366,3 +398,4 @@ def make_scaled_elasticnet_fixed(alpha: float, l1_ratio: float):
     return Pipeline([("scaler", StandardScaler()),
                       ("model", ElasticNet(alpha=alpha, l1_ratio=l1_ratio,
                                             max_iter=20000, random_state=RANDOM_SEED))])
+    

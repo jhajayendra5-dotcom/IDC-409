@@ -120,11 +120,11 @@ def report_classification(name: str, res: pd.DataFrame, lines: list):
 def main():
     df = pd.read_csv("features.csv", parse_dates=["date"]).set_index("date")
 
-    # p is derived by the identical AIC procedure Phase 4 applies (AIC
-    # on r(t) alone), so the specification evaluated here matches the
+    # p is derived by the identical conditional ElasticNet CV procedure
+    # Phase 4 applies, so the specification evaluated here matches the
     # specification fit in Phase 4 exactly
-    p = cfg.choose_lag_order(df["r"], cfg.MAX_LAG)
-    print(f"[phase7] lag order p = {p} (matches Phase 4's AIC selection)")
+    p = cfg.choose_lag_order(df, cfg.MAX_LAG)
+    print(f"[phase7] lag order p = {p} (matches Phase 4's conditional CV selection)")
 
     # Phase 4's cross-validated (alpha, l1_ratio) are reused rather than
     # re-selected at every walk-forward refit: the search itself
@@ -183,9 +183,9 @@ def main():
     lines.append(f"Ljung-Box (lag 5, 10) p-values:\n{lb['lb_pvalue'].to_string()}")
     lag_insufficient = (lb["lb_pvalue"] < 0.05).any()
     if lag_insufficient:
-        lines.append(">> significant autocorrelation remains -> increase memory kernel lag order p (cfg.MAX_LAG).")
+        lines.append(">> significant residual autocorrelation remains -> the selected linear conditional-mean specification does not fully explain temporal dependence; consider a richer conditional-mean model rather than increasing p solely to eliminate this diagnostic.")
     else:
-        lines.append(">> no significant residual autocorrelation -> memory kernel order p looks sufficient.")
+        lines.append(">> no significant residual autocorrelation -> the selected conditional-mean specification appears adequate at the tested lags.")
 
     _, arch_p, _, _ = het_arch(resid, result_object=False)
     lines.append(f"\nARCH-LM test p-value: {arch_p:.4f}")

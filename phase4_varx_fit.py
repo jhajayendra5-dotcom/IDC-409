@@ -66,8 +66,8 @@ import phase1_config as cfg
 def main():
     df = pd.read_csv("features.csv", parse_dates=["date"]).set_index("date")
 
-    p = cfg.choose_lag_order(df["r"], cfg.MAX_LAG)
-    print(f"[phase4] AIC-selected lag order p = {p}")
+    p = cfg.choose_lag_order(df, cfg.MAX_LAG)
+    print(f"[phase4] CV-selected lag order p = {p}")
 
     X, y, feature_names = cfg.build_design_matrix(df, p)
     pipeline = cfg.make_scaled_elasticnet_pipeline()

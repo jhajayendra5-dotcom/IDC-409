@@ -2,82 +2,109 @@
 GLE / VARX CURRENCY FORECASTING PIPELINE
 
 ======================================================================
-1. PHYSICAL PICTURE
+1. WHAT THE PROGRAM DOES (ONE PARAGRAPH)
 ======================================================================
-The exchange rate is modelled as ONE OBSERVED DEGREE OF FREEDOM of a large,
-open, driven, dissipative system (the global market). Only two quantities are
-resolved:
+It treats the daily USD/INR log-return as a noisy, driven signal with finite
+memory. A sparse linear map predicts tomorrow's return from (i) the last p
+returns, (ii) recent realized volatility and (iii) today's returns of seven
+global market series. The part of the return this map cannot explain is
+modelled as a random force whose strength changes with time and whose tails
+are heavy (GARCH(1,1) with Student-t innovations). The fitted model is then
+(a) run forward thousands of times to produce a predictive distribution of
+returns and prices, and (b) scored out of sample, against a random walk, with
+statistics that are valid for nested models.
 
-    r(t)     = ln P(t) - ln P(t-1)                     (log-return)
+======================================================================
+2. PHYSICAL PICTURE
+======================================================================
+The exchange rate is ONE OBSERVED DEGREE OF FREEDOM of a very large, open,
+driven, dissipative system (the global market). Two quantities are resolved:
+
+    r(t)     = ln P(t) - ln P(t-1)                         (log-return)
     sigma(t) = std( r(t-w+1), ..., r(t) ),  w = VOL_WINDOW   (realized volatility)
 
-Every other degree of freedom (order flow, information, central-bank
-intervention, other instruments) is either (i) observed and supplied as an
-exogenous drive x_j(t), or (ii) unobserved and eliminated.
+Every other degree of freedom (order flow, information, central-bank action,
+other instruments) is either (i) observed and supplied as an external drive
+x_j(t), or (ii) unobserved and eliminated.
 
-Eliminating degrees of freedom by Mori-Zwanzig projection gives, for the
+Eliminating degrees of freedom by Mori-Zwanzig projection yields, for the
 retained variable, a Generalized Langevin Equation (GLE):
 
     dr/dt = - Int_0^t K(t-s) r(s) ds  +  SUM_j Omega_j x_j(t)  +  eta(t)
 
-    K(t-s)  memory kernel: eliminated variables relax on finite time scales,
-            so the history of r feeds back on its present value (r alone is
-            therefore non-Markovian);
-    Omega_j linear response of r to the external forcing x_j;
-    eta(t)  projected unresolved force (noise).
+    K(t-s)  memory kernel. The eliminated variables relax on finite time
+            scales, so the past of r acts back on its present: r alone is
+            non-Markovian. (A memoryless Langevin equation is the special case
+            K(t-s) ~ delta(t-s).)
+    Omega_j linear response of r to the external forcing x_j.
+    eta(t)  projected unresolved force: the effect of all eliminated variables
+            that is not a linear function of the retained history. It plays the
+            role of the "random force" of Brownian motion.
 
-No equilibrium is assumed. In particular the model imposes no
-fluctuation-dissipation relation between K and the autocovariance of eta, no
-detailed balance, and no Markov property. The only structural requirements
-are (a) weak stationarity of r(t) over the sample (tested by ADF) and (b) a
-conditional mean that is linear in its regressors with time-invariant
-coefficients over each estimation window.
+Nothing here assumes equilibrium: no fluctuation-dissipation relation ties K
+to the autocovariance of eta, no detailed balance is imposed, and no Markov
+property is assumed. The two structural requirements are (a) weak stationarity
+of r(t) over the sample (checked by an ADF test) and (b) a conditional mean
+that is linear in its regressors with time-invariant coefficients over each
+estimation window.
 
 ======================================================================
-2. DISCRETE MODEL (one INR trading day = one step)
+3. DISCRETE MODEL (one INR trading day = one time step)
 ======================================================================
-Discretizing the GLE on the daily grid gives a linear autoregression with
-exogenous inputs (VARX):
+Sampling the GLE on the daily grid turns the memory integral into a finite sum
+and gives a linear autoregression with exogenous inputs (VARX):
 
     r(t+1) = SUM_{k=1..p} K_k r(t-k+1)  +  c sigma(t)  +  SUM_j Omega_j x_j(t)  +  eta(t)
 
-All regressors on the right are known at time t, so the model is a strictly
-causal one-step predictor. {K_k} is the discretized memory kernel, p =
-MAX_LAG is the maximal memory depth, and sigma(t) is included as an observed
-state variable (a nonlinear functional of recent r that can modulate the
-conditional mean).
+(Signs and the discretization constants are absorbed into K_k.) Every
+regressor is known at the close of day t, so this is a strictly causal
+one-step predictor. {K_k} is the discretized memory kernel and p = MAX_LAG its
+maximal depth; sigma(t) is an observed state variable, a nonlinear functional
+of recent r that is allowed to shift the conditional mean.
 
-Identifiability: from a single trajectory, linear memory K and linear
-autocorrelation of eta enter identically as linear temporal dependence.
-{K_k} is therefore the TOTAL linear temporal dependence of the projected
-dynamics, and eta(t) is the innovation that remains after all linear
+Identifiability. From one trajectory, linear memory K and linear
+autocorrelation of eta are indistinguishable: both appear as linear temporal
+dependence. {K_k} is therefore the TOTAL linear temporal dependence of the
+projected dynamics, and eta(t) is the innovation left after all linear
 dependence on the past and on the drives has been removed.
 
 ======================================================================
-3. ESTIMATION (sparse linear regression)
+4. ESTIMATION (sparse, noise-consistent linear regression)
 ======================================================================
 All coefficients beta = (K_1..K_p, c, Omega_1..Omega_J) are estimated jointly
-by elastic net on z-scored regressors:
+by weighted elastic net on z-scored regressors:
 
-    min_beta  (1/2n) || y - b0 - Z beta ||_2^2
+    min_beta  (1/2n) sum_t w_t (y_t - b0 - Z_t beta)^2
               + alpha [ rho ||beta||_1 + (1-rho)/2 ||beta||_2^2 ]
 
-    y = r(t+1);  Z = column-standardized regressors;  rho = l1_ratio.
+    y = r(t+1);  Z = column-standardized regressors;  rho = l1_ratio;
+    w_t = observation weights (see below).
 
-* Standardization makes the penalty independent of measurement units; the
-  reported coefficients are STANDARDIZED, beta_std = beta_raw * sd(regressor),
-  i.e. the change in r(t+1) per one-sd change of the regressor.
+* Standardization makes the penalty independent of measurement units. The
+  reported coefficients are STANDARDIZED, beta_std = beta_raw * sd(regressor):
+  the change in r(t+1) per one-sd change of the regressor.
 * The L1 term sets weak coefficients exactly to zero. The surviving set
-  {j : Omega_j != 0} is the estimated set of drives coupled to the currency;
-  excluded regressors are absorbed into eta. Unused lags are likewise zeroed,
-  so the EFFECTIVE memory depth is the largest lag index with nonzero K_k.
+  {j : Omega_j != 0} is the estimated set of drives that LEAD r by one step (a
+  statistical lead-lag relation, not a structural coupling); excluded
+  regressors are absorbed into eta. Unused lags are likewise zeroed, so the
+  EFFECTIVE memory depth is the largest lag index with nonzero K_k. The L2 term
+  stabilizes the fit when regressors are correlated.
 * (alpha, rho) are chosen by cross-validation on TimeSeriesSplit: every
-  validation block lies strictly after its training block. The alpha grid is
-  generated from the data, from the smallest alpha that yields the all-zero
-  model downward in logarithmic steps, so it adapts to the scale of y.
+  validation block lies strictly after its training block, so the selection
+  never uses the future. The alpha grid is generated from the data, from the
+  smallest alpha that yields the all-zero model downward in logarithmic steps,
+  so it adapts to the scale of y.
+* Weights. The noise is heteroskedastic and heavy-tailed (section 4), so the
+  mean is estimated in two passes that make it consistent with the noise
+  model. Pass 1 is unweighted; its residuals are fitted by GARCH(1,1)-t. Pass 2
+  repeats the elastic net with the Student-t maximum-likelihood (IRLS) weights
+  w_t = (nu+1) / ((nu-2+z_t^2) h_t),  z_t = eta_t/sqrt(h_t),  normalized to
+  mean 1. Observations taken in high-noise states, and extreme residuals, are
+  thereby down-weighted. The same estimator is used for the production fit and
+  for every walk-forward refit.
 
 ======================================================================
-4. NOISE MODEL
+5. NOISE MODEL
 ======================================================================
 The residual eta(t) is modelled as GARCH(1,1) with unit-variance Student-t
 innovations:
@@ -85,41 +112,62 @@ innovations:
     eta(t) = sqrt(h(t)) z(t),   z(t) ~ standardized Student-t(nu)
     h(t)   = omega + alpha eta(t-1)^2 + beta h(t-1)
 
-h(t) is the conditional variance (instantaneous noise intensity). Physically,
-volatility clustering means the noise amplitude relaxes slowly after a shock;
-alpha+beta < 1 is the relaxation factor per day, the unconditional variance is
-omega/(1-alpha-beta), and alpha+beta -> 1 gives near-integrated variance. nu
-sets tail weight (nu -> infinity is Gaussian). Parameters are obtained by
-maximum likelihood.
+h(t) is the conditional variance, the instantaneous intensity of the random
+force. Volatility clustering means that after a shock the noise amplitude
+relaxes slowly: alpha+beta < 1 is the relaxation factor per day, the
+unconditional variance is omega/(1-alpha-beta), and alpha+beta -> 1 is
+near-integrated variance (shocks barely decay). nu sets the tail weight
+(nu -> infinity is Gaussian). Parameters are obtained by maximum likelihood.
 
 ======================================================================
-5. FORWARD SIMULATION (Monte Carlo)
+6. FORWARD SIMULATION (Monte Carlo)
 ======================================================================
-r_sim(t+h) depends on its own simulated past through the lag buffer K, through
-sigma (a sample standard deviation of the path's own returns), and through the
-noise variance h, which depends on the previous simulated noise. The law of
-r(t+H) therefore has no closed form for H > 1 and is obtained by propagating
-an ensemble of sample paths through the full recursion. Empirical quantiles
-over the ensemble approximate the predictive distribution conditional on
-information at time T under the fitted dynamics. Cumulative log-returns are
-path sums; prices are P(T) exp(cumulative return).
+Each simulated return depends on its own simulated past through three
+channels: the lag buffer (K), the realized volatility sigma (a sample standard
+deviation of the path's own returns) and the noise variance h (which depends
+on the previous simulated noise). The law of r(t+H) therefore has no closed
+form for H > 1 and is obtained by propagating an ensemble of sample paths
+through the full recursion. Empirical quantiles over the ensemble approximate
+the predictive distribution conditional on information at time T under the
+fitted dynamics. Cumulative log-returns are path sums; prices are
+P(T) exp(cumulative return).
 
 Scope: the ensemble represents uncertainty from the noise process and from
 future drive values. Fitted coefficients are treated as fixed, and future
 drives are sampled independently of the simulated path.
 
 ======================================================================
-6. EVALUATION
+7. EVALUATION
 ======================================================================
-Walk-forward (expanding window): at each refit, using only data before the
-prediction date, the elastic net (including its hyperparameters) is re-fitted
-and used for the next REFIT_EVERY one-step predictions. Accuracy is measured
-against the zero forecast E[r]=0 (random walk in price) with out-of-sample
-R2 = 1 - SSE_model/SSE_zero and a one-sided Diebold-Mariano test (HAC
-variance). Adequacy of the model's truncations is tested on the out-of-sample
-errors by Ljung-Box (residual autocorrelation), ARCH-LM on GARCH-standardized
-errors (remaining conditional heteroskedasticity), and CUSUM (parameter
-stability).
+Walk-forward (expanding window). At each refit, using only data before the
+prediction date, the weighted elastic net (including its hyperparameters) is
+re-fitted and used for the next REFIT_EVERY one-step predictions.
+
+Mean accuracy is measured against two benchmarks: the zero forecast E[r]=0
+(random walk in price without drift) and the expanding-mean forecast (random
+walk with drift, built only from past data). Every competitor nests its
+benchmark (setting its extra coefficients to zero recovers the benchmark), so
+equal accuracy is tested with the one-sided Clark-West (2007) statistic,
+
+    f_t = (y-b)^2 - [(y-a)^2 - (b-a)^2] = 2 (y-b)(a-b)
+
+(y outcome, b benchmark forecast, a larger-model forecast) with HAC variance.
+The correction term (b-a)^2 removes the upward bias that estimating
+coefficients whose true value is zero adds to a model's squared error, which a
+plain squared-error comparison would misread as lack of skill. Reported:
+RMSE, MAE, out-of-sample R2 = 1 - SSE_model/SSE_zero, and the Clark-West
+p-values (model vs zero; candidate vs drift; candidate vs the no-memory model).
+
+The predictive DENSITY (the object that is simulated) is evaluated one step
+ahead out of sample: at every refit the GARCH-t noise model is re-fitted on
+the data before the block and then filtered through the block using only past
+errors and frozen parameters. The probability integral transforms (PIT) are
+tested for uniformity (Kolmogorov-Smirnov), 5%/95% tail coverage is reported,
+and the mean log score is compared with a constant-variance Gaussian.
+
+Adequacy of the model's truncations is tested on the filtered standardized
+errors z by Ljung-Box (remaining linear dependence), ARCH-LM (remaining
+conditional heteroskedasticity) and CUSUM (stability of the mean of z).
 
 ======================================================================
 INPUTS
@@ -133,6 +181,8 @@ USAGE
   python gle_pipeline.py --csv usd_inr.csv --market market_drives.csv --outdir results
   python gle_pipeline.py --demo            # synthetic data with known ground truth
   python gle_pipeline.py --horizon 60 --n-sims 5000 --start 2019-01-01 --end 2025-06-30
+
+REQUIREMENTS  scikit-learn >= 1.7 (ElasticNetCV(alphas=<int>)), arch, statsmodels, scipy
 
 OUTPUTS (--outdir)
   features.csv  residuals.csv  simulation_forecast.csv  evaluation_report.txt
@@ -154,40 +204,44 @@ import pandas as pd
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ---------------------------------------------------------------- config
-# Hyperparameters of the pipeline (all overridable from the command line).
-#   START, END    estimation period; None keeps all available data.
-#   VOL_WINDOW    w in sigma(t) = std(r(t-w+1..t)).
-#   MAX_LAG       p, the maximal memory depth; L1 shrinkage zeroes unused lags.
-#   L1_RATIOS     candidate mixing weights rho between L1 and L2 penalties.
-#   N_ALPHAS      length of the data-generated penalty grid per rho.
-#   CV_SPLITS     number of forward-chaining validation folds.
-#   N_SIMS,HORIZON  Monte Carlo ensemble size, forecast length in days.
-#   REFIT_EVERY, TEST_WINDOW  walk-forward refit interval, evaluation length.
-#   MAX_FILL_FRAC maximal tolerated fraction of missing observations per drive.
-#   SEED          seed of the random generator (reproducibility).
+# All tunable quantities (each can be overridden from the command line).
+#   START, END      estimation period; None keeps all available data.
+#   VOL_WINDOW      w in sigma(t) = std(r(t-w+1..t)): the averaging time of the
+#                   realized-volatility state variable.
+#   MAX_LAG         p, the maximal memory depth in trading days; the L1 penalty
+#                   zeroes lags the data do not support.
+#   L1_RATIOS       candidate mixing weights rho between the L1 and L2 penalties.
+#   N_ALPHAS        number of penalty strengths tried per rho (grid built from the data).
+#   CV_SPLITS       number of forward-chaining validation folds.
+#   N_SIMS,HORIZON  Monte Carlo ensemble size and forecast length in days.
+#   REFIT_EVERY     walk-forward: days between refits.
+#   TEST_WINDOW     walk-forward: number of out-of-sample days scored.
+#   MAX_FILL_FRAC   largest tolerated fraction of INR dates on which a drive has no value.
+#   SEED            seed of the random generator (reproducibility).
 cfg = SimpleNamespace(
     START=None, END=None,                 # None = use all available data
     VOL_WINDOW=5,
-    MAX_LAG=10,                           # p; the L1 penalty prunes unused lags
+    MAX_LAG=10,                           # p: maximal memory depth (days)
     L1_RATIOS=[0.5, 0.7, 0.85, 1.0],
     N_ALPHAS=50,
     CV_SPLITS=5,
-    N_SIMS=1000, HORIZON=30,
-    REFIT_EVERY=20, TEST_WINDOW=200,
-    MAX_FILL_FRAC=0.10,                   # abort if a drive is missing more than this
+    N_SIMS=20000, HORIZON=30,             # Monte Carlo quantile error ~ sqrt(q(1-q)/N)/f(x_q): small at 20000 paths
+    REFIT_EVERY=20, TEST_WINDOW=1000,     # a skill of R2 ~ 0.5% needs ~1000 test days to be detectable
+    MAX_FILL_FRAC=0.10,                   # abort if a drive is missing on more than this fraction of dates
     SEED=42,
 )
-# Candidate exogenous drives x_j; each is supplied as a daily log-return column "<name>_r".
+# The candidate external drives x_j. Each is read as a daily log-return column "<name>_r".
 DRIVES = ["broad_usd", "brent_oil", "gold", "vix", "sp500", "nikkei", "us10y"]
 DRIVE_COLS = [f"{d}_r" for d in DRIVES]
-# arch's optimizer is best conditioned for data of order 1-1000; residuals (~1e-2)
-# are multiplied by this constant before the GARCH fit and divided by it afterwards.
-GARCH_SCALE = 1000.0                      # residuals x1000 for numerical stability in arch
+# The GARCH optimizer is best conditioned for data of order 1-1000, while residuals are
+# of order 1e-2: they are multiplied by this constant before the GARCH fit and divided
+# by it afterwards. It is a pure change of units and does not alter the model.
+GARCH_SCALE = 1000.0
 OUT = Path("pipeline_output")
 
 
 def _p(name):
-    # Path of an output artifact inside the output directory.
+    # Path of an output file inside the output directory.
     return OUT / name
 
 
@@ -195,10 +249,10 @@ def _p(name):
 def load_price_csv(path):
     """Read the target price series P(t) from CSV (columns: date, price).
 
-    Unparseable dates/prices are discarded, rows are ordered by date,
-    duplicate dates keep the last entry, and the series is truncated to
-    [cfg.START, cfg.END]. Strict positivity is enforced because r = ln(P_t/P_{t-1})
-    is defined only for P > 0. Returns a date-indexed pandas Series."""
+    Rows with unparseable dates or prices are discarded, the rest is sorted by
+    date, duplicate dates keep the last entry, and the series is cut to
+    [cfg.START, cfg.END]. Strict positivity is enforced because
+    r = ln(P_t/P_{t-1}) exists only for P > 0. Returns a date-indexed Series."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Price CSV not found: {path.resolve()}")
@@ -222,38 +276,41 @@ def load_price_csv(path):
 
 
 def load_market_csv(path):
-    """Read the exogenous drives x_j(t) from CSV.
+    """Read the external drives x_j(t) from CSV.
 
-    Requires one daily log-return column per name in DRIVE_COLS. The frame is
-    date-indexed, ordered, de-duplicated (last entry kept), restricted to the
-    drive columns, and +/-inf are mapped to NaN so that undefined returns are
-    treated as missing observations."""
+    Needs a date column and one daily log-return column per name in DRIVE_COLS.
+    The frame is date-indexed, sorted, de-duplicated (last entry kept) and cut
+    to the drive columns. Non-numeric entries and +/-inf become NaN, i.e. an
+    undefined return is treated as a missing observation."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
             f"Market CSV not found: {path.resolve()} (columns needed: date, {DRIVE_COLS}; "
             "use --demo for the synthetic run)")
-    m = pd.read_csv(path, parse_dates=["date"])
-    missing = [c for c in DRIVE_COLS if c not in m.columns]
+    m = pd.read_csv(path)
+    missing = [c for c in ["date"] + DRIVE_COLS if c not in m.columns]
     if missing:
         raise ValueError(f"{path} missing columns: {missing}")
-    m = m.drop_duplicates("date", keep="last").sort_values("date").set_index("date")
-    return m[DRIVE_COLS].replace([np.inf, -np.inf], np.nan)
+    m["date"] = pd.to_datetime(m["date"], errors="coerce")
+    m = m.dropna(subset=["date"]).drop_duplicates("date", keep="last").sort_values("date").set_index("date")
+    return m[DRIVE_COLS].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
 
 
 def synthetic_universe(start, end, seed):
-    """Validation fixture with a KNOWN data-generating process (not a market model).
+    """Synthetic data with a KNOWN generating process, used to check that the
+    estimator recovers a planted structure (it is a test fixture, not a market model).
 
-    Drives:   x_j(t) ~ N(0, 0.005^2), i.i.d.
+    Drives:   x_j(t) ~ N(0, 0.005^2), independent in time and across j.
     Coupling: the first two drives act on r with Omega_j = +/- U(0.3, 0.9).
     Memory:   K_k = K_1 * 0.5^(k-1), k = 1..3, with K_1 ~ U(0.15, 0.30).
-    Noise:    GARCH(1,1), omega=1e-6, alpha=0.08, beta=0.88, Gaussian innovations.
-    Recursion:
-        h(t) = omega + alpha r(t-1)^2 + beta h(t-1)      (r(t-1) used as the shock proxy)
-        r(t) = SUM_k K_k r(t-1-k+1... i.e. kernel on r(t-1), r(t-2), r(t-3)
-               + SUM_j Omega_j x_j(t-1) + sqrt(h(t)) eps(t)
-    The price is P(t) = exp(cumsum r). A correct estimator must recover K and
-    the two coupled drives, and zero the remaining five drives."""
+    Noise:    GARCH(1,1) with omega=1e-6, alpha=0.08, beta=0.88, Gaussian innovations.
+    Recursion (t = 1, 2, ...), with r(0) = 0:
+        h(t) = omega + alpha r(t-1)^2 + beta h(t-1)
+               (the previous return stands in for the previous noise shock)
+        r(t) = K_1 r(t-1) + K_2 r(t-2) + K_3 r(t-3)
+               + SUM_{coupled j} Omega_j x_j(t-1) + sqrt(h(t)) eps(t),   eps ~ N(0,1)
+    The price is P(t) = exp(cumsum r). A correct estimator recovers K and the
+    two coupled drives and sets the other five drives to zero."""
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range(start, end)
     n = len(dates)
@@ -280,21 +337,26 @@ def synthetic_universe(start, end, seed):
 
 
 def build_features(price, market):
-    """Construct the observed state [r, sigma] and align the drives to it.
+    """Build the observed state [r, sigma] and place the drives on the same clock.
 
-    State:  r(t) = ln(P(t)/P(t-1)),  sigma(t) = rolling sample std of r over
-            VOL_WINDOW days (ddof=1). Rows without a full window are dropped.
-    Alignment: the state is restricted to the date range covered by the drive
-            file and the drives are re-indexed onto the INR trading calendar,
-            so one row = one INR trading day = one time step of the model.
-    Missing drive values (a foreign market closed while INR traded) are set to
-            0: a zero return encodes 'no new information from that market on
-            that date'. Filling, rather than deleting, rows keeps the sample
-            on consecutive trading days, which the lag structure r_lag_k =
-            r(t-k+1) requires. If any drive is missing on more than
-            MAX_FILL_FRAC of dates the run is aborted.
-    Row t holds quantities known at the close of day t; the target of row t is
-    r(t+1), so no regressor ever contains information from after its target."""
+    State.  r(t) = ln(P(t)/P(t-1)); sigma(t) = sample standard deviation of r
+            over the last VOL_WINDOW days (ddof=1). Rows without a full window
+            are dropped.
+    Clock.  One row = one INR trading day = one model time step. The state is
+            cut to the date range covered by the drive file.
+    Drives. Log returns add, so the drive's return on INR day t is defined as
+            the SUM of its daily log returns over (previous INR trading day, t].
+            Implementation: accumulate each drive's own-calendar returns into a
+            cumulative log level, carry that level forward onto the INR
+            calendar, and difference consecutive INR dates. A foreign-market
+            move on a day when INR is closed therefore enters the next INR
+            trading day; a drive with no observation on an INR date adds 0 (no
+            new information). Rows remain consecutive INR trading days, which
+            the lag structure r_lag_k = r(t-k+1) requires. The run aborts if
+            any drive is missing on more than MAX_FILL_FRAC of INR dates.
+    Causality. Row t holds only quantities known at the close of day t, and its
+            target is r(t+1), so no regressor contains information from after
+            its target."""
     price = price.sort_index()
     r = np.log(price / price.shift(1))
     state = pd.DataFrame({"price": price, "r": r,
@@ -303,20 +365,32 @@ def build_features(price, market):
     state = state.loc[market.index.min():market.index.max()]
     if state.empty:
         raise ValueError("Price and market date ranges do not overlap.")
-    m = market.reindex(state.index)
-    frac = m.isna().mean()
+    raw = market.reindex(state.index)
+    frac = raw.isna().mean()
     if (frac > cfg.MAX_FILL_FRAC).any():
         raise ValueError("Too many missing drive observations:\n"
                          + frac[frac > cfg.MAX_FILL_FRAC].round(3).to_string())
-    n_fill = int(m.isna().sum().sum())
-    feats = state.join(m.fillna(0.0))
+    n_fill = int(raw.isna().sum().sum())
+
+    # cum = cumulative log level of each drive on its own calendar, carried forward onto the
+    # INR calendar; the difference of two consecutive INR dates is the exact drive return over
+    # that interval, holiday moves included. The first INR row also accumulates everything
+    # that precedes it.
+    cum = market.fillna(0.0).cumsum()
+    cum = cum.reindex(cum.index.union(state.index)).ffill()
+    at = cum.reindex(state.index)
+    prev = cum.loc[cum.index < state.index[0]].dropna()
+    first = at.iloc[0] - (prev.iloc[-1] if len(prev) else 0.0)   # accumulate up to the first INR row too
+    m = at.diff()
+    m.iloc[0] = first
+    feats = state.join(m)
     print(f"[data] rows={len(feats)}  {feats.index.min().date()} -> {feats.index.max().date()}  "
-          f"| holiday zero-filled drive cells = {n_fill}")
+          f"| missing drive cells on INR dates (zero contribution) = {n_fill}")
     return feats
 
 
 def adf_check(r):
-    """Augmented Dickey-Fuller test (lag order chosen by AIC) on r(t).
+    """Augmented Dickey-Fuller test on r(t), lag order chosen by AIC.
 
     H0: r has a unit root (non-stationary). Rejection (p < 0.05) supports the
     time-translation invariance of the statistics of r that fixed-coefficient
@@ -332,12 +406,12 @@ def adf_check(r):
 def design(feats, p):
     """Assemble the regression pair (X, y).
 
-    Row t of X:  [r_lag1..r_lag_p, sigma(t), x_1(t)..x_J(t)],
-                 with r_lag_k(t) = r(t-k+1), so r_lag1 = r(t) is the newest
-                 return known when r(t+1) is predicted.
+    Row t of X:  [r_lag1..r_lag_p, sigma(t), x_1(t)..x_J(t)], where
+                 r_lag_k(t) = r(t-k+1), so r_lag1 = r(t) is the newest return
+                 known when r(t+1) is predicted.
     Target:      y(t) = r(t+1).
-    Rows with an incomplete regressor vector (the first p-1 rows) and the final
-    row (target not yet observed) are removed."""
+    Removed rows: the first p-1 (incomplete lag vector) and the last (its
+                 target is not yet observed)."""
     X = pd.DataFrame({f"r_lag{k}": feats["r"].shift(k - 1) for k in range(1, p + 1)})
     X = X.join(feats[["sigma"] + DRIVE_COLS]).dropna()
     y = feats["r"].shift(-1).reindex(X.index)
@@ -347,45 +421,79 @@ def design(feats, p):
 
 def make_model():
     """Elastic-net regression on standardized regressors, with (alpha, rho)
-    selected by time-ordered cross-validation.
+    chosen by time-ordered cross-validation.
 
-    Pipeline: StandardScaler (zero mean, unit variance per column) followed by
-    ElasticNetCV minimizing  (1/2n)||y - b0 - Z beta||^2
-    + alpha[rho||beta||_1 + (1-rho)/2 ||beta||_2^2].
-    alphas=None (sklearn default) makes the solver generate, for every rho, a
-    logarithmic grid of N_ALPHAS values starting at the smallest alpha for
-    which beta = 0; the grid thus scales with the data. TimeSeriesSplit trains
-    on an initial segment and validates on the segment that follows it,
-    preserving temporal order. The pair (alpha, rho) with minimal mean
-    validation MSE is selected and the model is refit on all supplied data."""
+    Pipeline: StandardScaler (zero mean, unit variance per column), then
+    ElasticNetCV minimizing  (1/2n) sum w_t (y_t - b0 - Z_t beta)^2
+    + alpha[rho||beta||_1 + (1-rho)/2 ||beta||_2^2]  (w_t = 1 unless a
+    sample_weight is passed to fit).
+    alphas=N_ALPHAS (an integer, scikit-learn >= 1.7) makes the solver build,
+    for every rho, a logarithmic grid of N_ALPHAS values starting at the
+    smallest alpha for which beta = 0, so the grid scales with the data.
+    TimeSeriesSplit trains on an initial segment and validates on the segment
+    right after it, preserving temporal order. The pair (alpha, rho) with the
+    smallest mean validation MSE is selected and the model is refit on all
+    supplied data."""
     from sklearn.linear_model import ElasticNetCV
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
     return Pipeline([
         ("scale", StandardScaler()),
-        ("enet", ElasticNetCV(l1_ratio=cfg.L1_RATIOS, n_alphas=cfg.N_ALPHAS,
+        ("enet", ElasticNetCV(l1_ratio=cfg.L1_RATIOS, alphas=cfg.N_ALPHAS,
                               cv=TimeSeriesSplit(n_splits=cfg.CV_SPLITS), max_iter=50000)),
     ])
 
 
-def fit_varx(feats):
-    """Estimate the memory kernel, drive couplings and state coefficient.
+def fit_weighted(X, y):
+    """Two-pass elastic-net estimate of the conditional mean, consistent with the noise model.
 
-    1. Build (X, y) with maximal memory depth p = MAX_LAG; require at least
-       10 observations per regressor.
-    2. Fit the elastic net (make_model). Coefficients (standardized) with
-       |beta| > 1e-12 form the active set: nonzero K_k = memory kernel,
-       nonzero drive entries = estimated couplings Omega_j, 'sigma' = state term.
+    Pass 1: unweighted elastic net -> residuals eta.
+    Noise:  GARCH(1,1)-t fitted to eta gives h(t) and nu.
+    Pass 2: the elastic net is re-fitted with the Student-t maximum-likelihood
+            (IRLS) weights  w_t = (nu+1) / ((nu-2 + z_t^2) h_t),
+            z_t = eta_t/sqrt(h_t), normalized to mean 1. Large h_t (high-noise
+            state) or large |z_t| (outlier) lowers the weight of observation t,
+            which is the efficient estimator when the noise is GARCH-t.
+    If the noise fit fails or the weights are not finite, the pass-1 estimate is
+    returned. The same function is used for the production fit and for every
+    walk-forward refit. Returns the fitted pipeline."""
+    m = make_model().fit(X.values, y.values)
+    r = pd.Series(y.values - m.predict(X.values), index=X.index)
+    try:
+        _, s, info = fit_garch(r, quiet=True)
+        nu = info["nu"]
+        h = s.values ** 2
+        w = (nu + 1.0) / ((nu - 2.0 + (r.values ** 2) / h) * h)
+        w = w / w.mean()
+    except Exception as exc:              # noise model failed: keep the unweighted pass-1 estimate
+        print(f"[fit] WARNING: weighting skipped ({type(exc)._name_}); using the unweighted fit.")
+        return m
+    if not (np.all(np.isfinite(w)) and w.max() > 0):
+        print("[fit] WARNING: non-finite weights; using the unweighted fit.")
+        return m
+    return make_model().fit(X.values, y.values, enet__sample_weight=w)
+
+
+def fit_varx(feats):
+    """Estimate the memory kernel, the drive couplings and the state coefficient.
+
+    1. Build (X, y) with maximal memory depth p = MAX_LAG; require at least 10
+       observations per regressor.
+    2. Fit the weighted elastic net (fit_weighted). Standardized coefficients
+       with |beta| > 1e-12 form the active set: nonzero K_k = memory kernel,
+       nonzero drive entries = estimated lead-lag couplings Omega_j, 'sigma' =
+       state term. If the active set is empty the model is a constant drift.
     3. Effective memory depth = largest k with K_k != 0.
-    4. In-sample residual eta(t) = y(t) - yhat(t), the input of the noise
-       model; R^2 = 1 - SSE/SST measures explained variance (in sample).
+    4. In-sample residual eta(t) = y(t) - yhat(t) is the input of the noise
+       model; R^2 = 1 - SSE/SST is the in-sample explained variance (optimistic
+       by construction; out-of-sample skill is measured in evaluate()).
     Returns (fitted pipeline, ordered feature names, residual series, summary)."""
     p = cfg.MAX_LAG
     X, y = design(feats, p)
     if len(X) < 10 * (p + len(DRIVES) + 1):
         raise ValueError(f"Only {len(X)} usable rows; too few for {X.shape[1]} features.")
-    model = make_model().fit(X.values, y.values)
+    model = fit_weighted(X, y)
     enet = model.named_steps["enet"]
     coef = pd.Series(enet.coef_, index=X.columns)
     nz = coef[coef.abs() > 1e-12]
@@ -393,11 +501,13 @@ def fit_varx(feats):
 
     print(f"[varx] p_max={p}  alpha={enet.alpha_:.3e}  l1_ratio={enet.l1_ratio_}  "
           f"active={len(nz)}/{len(coef)}  effective memory depth={max(lags) if lags else 0}")
+    if not len(nz):
+        print("[varx] WARNING: all slopes shrunk to zero; the 'GLE' reduces to a constant drift.")
     print("[varx] nonzero standardized coefficients:")
     print(nz.sort_values(key=np.abs, ascending=False).to_string() if len(nz) else "  (none)")
 
     resid = pd.Series(y.values - model.predict(X.values), index=X.index, name="eta")
-    r2 = 1 - (resid ** 2).sum() / ((y - y.mean()) ** 2).sum()
+    r2 = 1 - (resid * 2).sum() / ((y - y.mean()) * 2).sum()
     print(f"[varx] in-sample R^2 = {r2:.4f}")
     resid.rename("eta").reset_index().rename(columns={"index": "date"}).to_csv(
         _p("residuals.csv"), index=False)
@@ -412,24 +522,37 @@ def fit_varx(feats):
     return model, list(X.columns), resid, info
 
 
-def fit_garch(resid):
+def fit_garch(resid, quiet=False):
     """Fit GARCH(1,1) with Student-t innovations to the residual eta(t).
 
         eta(t) = sqrt(h(t)) z(t),  h(t) = omega + alpha eta(t-1)^2 + beta h(t-1).
 
-    The conditional mean is zero (the mean is already modelled by the VARX
-    part). Estimation is by maximum likelihood on eta * GARCH_SCALE.
-    Outputs: the fitted result object, the conditional standard deviation
-    sigma_eta(t) = sqrt(h(t)) in original units, and the parameter summary.
-    alpha+beta is the per-day persistence of the noise intensity; a value >= 1
-    means shocks to the variance do not decay (IGARCH)."""
+    The conditional mean is zero because the mean is already carried by the
+    VARX part. Estimation is by maximum likelihood on eta * GARCH_SCALE; if the
+    optimizer does not report convergence it is rerun once with a larger
+    iteration budget. Returns the fitted result object, the conditional standard
+    deviation sigma_eta(t) = sqrt(h(t)) in original units, and the parameter
+    summary. alpha+beta is the per-day persistence of the noise intensity; a
+    value >= 1 means variance shocks do not decay (IGARCH). quiet=True
+    suppresses printing (used inside the weighted estimator and the
+    walk-forward)."""
     from arch import arch_model
-    res = arch_model(resid.values * GARCH_SCALE, mean="Zero", vol="Garch", p=1, q=1,
-                     dist="t", rescale=False).fit(disp="off")
+    am = arch_model(np.asarray(resid.values, dtype=float) * GARCH_SCALE, mean="Zero", vol="Garch",
+                    p=1, q=1, dist="t", rescale=False)
+    try:
+        res = am.fit(disp="off")
+        ok = getattr(res, "convergence_flag", 0) == 0
+    except Exception:
+        res, ok = None, False
+    if not ok:                            # one retry with a larger iteration budget
+        res = am.fit(disp="off", options={"maxiter": 2000})
+        if not quiet and getattr(res, "convergence_flag", 0) != 0:
+            print("[garch] WARNING: optimizer did not report convergence.")
     a, b, nu = res.params["alpha[1]"], res.params["beta[1]"], res.params["nu"]
-    print(f"[garch] alpha={a:.4f} beta={b:.4f} persistence={a + b:.4f} nu={nu:.2f}")
-    if a + b >= 1:
-        print("[garch] WARNING: persistence >= 1 (IGARCH); long-horizon variance will not mean-revert.")
+    if not quiet:
+        print(f"[garch] alpha={a:.4f} beta={b:.4f} persistence={a + b:.4f} nu={nu:.2f}")
+        if a + b >= 1:
+            print("[garch] WARNING: persistence >= 1 (IGARCH); long-horizon variance will not mean-revert.")
     sigma_eta = pd.Series(np.asarray(res.conditional_volatility) / GARCH_SCALE,
                           index=resid.index, name="sigma_eta")
     return res, sigma_eta, {"omega": float(res.params["omega"]), "alpha": float(a),
@@ -438,25 +561,30 @@ def fit_garch(resid):
 
 # ------------------------------------------------------------ simulation
 def simulate(model, cols, garch, resid, feats, horizon, n_sims, seed):
-    """Propagate n_sims sample paths H = horizon days from the last observed state.
+    """Propagate n_sims sample paths H = horizon days forward from the last observed state.
 
-    Per path i and step h = 1..H:
+    Every path starts from the same initial condition (the last observed
+    returns, drives and GARCH state) and differs only through random draws.
+    Per path and step h = 1..H:
       (1) Regressors. r_lag_k is read from the path's own lag buffer
-          [r_sim(h-1), r_sim(h-2), ..., initialized with the last p observed
-          returns, newest first]; sigma is the sample std (ddof=1) of the last
-          VOL_WINDOW returns of the path; drives equal the last OBSERVED values
+          [r_sim(h-1), r_sim(h-2), ...], initialized with the last p observed
+          returns, newest first. sigma is the sample std (ddof=1) of the path's
+          last VOL_WINDOW returns. The drives equal their last OBSERVED values
           at h = 1 (known at time T) and, for h >= 2, a contiguous block of
-          historical rows drawn once per path (block bootstrap), which
-          preserves cross-drive co-movement and day-to-day drive autocorrelation.
+          historical rows drawn once per path (block bootstrap), which keeps
+          the cross-drive co-movement and the day-to-day autocorrelation of the
+          drives.
       (2) Noise. h_{T+h} = omega + alpha e_{T+h-1}^2 + beta h_{T+h-1}, started
-          from the last fitted conditional variance and last residual;
-          e = sqrt(h) z with z ~ Student-t(nu) scaled by sqrt((nu-2)/nu) to unit
-          variance. The recursion is evaluated in the scaled units of the fit.
-      (3) Return. r_sim = f(regressors) + e / GARCH_SCALE, with f the fitted
-          linear map (including standardization).
+          from the last fitted conditional variance and the last residual;
+          e = sqrt(h) z with z ~ Student-t(nu) rescaled by sqrt((nu-2)/nu) to
+          unit variance. The recursion is evaluated in the scaled units of the
+          GARCH fit.
+      (3) Return. r_sim = f(regressors) + e / GARCH_SCALE, where f is the
+          fitted linear map (standardization included).
       (4) The lag buffer and the rolling-return buffer are updated with r_sim,
-          so later steps feed back on the path's own history (non-Markovian).
-    Output rows give, per horizon, the ensemble mean and 5/50/95% quantiles of
+          so later steps feed back on the path's own history (non-Markovian
+          dynamics, as in the GLE).
+    Output: for each horizon, the ensemble mean and the 5/50/95% quantiles of
     the daily return, of the cumulative log-return, and of the implied price
     P(T) exp(cumulative return)."""
     rng = np.random.default_rng(seed)
@@ -467,21 +595,20 @@ def simulate(model, cols, garch, resid, feats, horizon, n_sims, seed):
     pr = garch.params
     om, al, be = pr["omega"], pr["alpha[1]"], pr["beta[1]"]
     nu = max(float(pr["nu"]), 2.05)
-    t_scale = np.sqrt((nu - 2.0) / nu)               # unit-variance Student-t
+    t_scale = np.sqrt((nu - 2.0) / nu)               # rescales Student-t(nu) to unit variance
     s2 = np.full(n, float(garch.conditional_volatility[-1]) ** 2)
     e_prev = np.full(n, float(resid.iloc[-1]) * GARCH_SCALE)
 
-    # Block bootstrap: one start index per path; the path uses rows
-    # start, start+1, ..., start+H-1 of the historical drive matrix.
+    # Block bootstrap of the drives: one start index per path; at step h the path uses row
+    # start+h of the historical drive matrix, so a path replays one contiguous stretch of history.
     hist = feats[exo].values
     if len(hist) <= horizon:
         raise ValueError("History must be longer than the forecast horizon.")
     starts = rng.integers(0, len(hist) - horizon + 1, size=n)
-    blocks = hist[starts[:, None] + np.arange(horizon)[None, :]]       # (n, H, n_exo)
     last_exo = feats[exo].iloc[-1].values
 
-    # Buffers: lag_buf = [r(T), r(T-1), ...] (p entries, newest first);
-    # r_hist = last w returns in chronological order (input of sigma).
+    # Buffers: lag_buf = [r(T), r(T-1), ...] (p entries, newest first), the regressor
+    # r_lag1..r_lag_p; r_hist = last w returns in chronological order, the input of sigma.
     r_vals = feats["r"].values
     lag_buf = np.tile(r_vals[-p:][::-1], (n, 1))                       # [r(T), r(T-1), ...]
     r_hist = np.tile(r_vals[-w:], (n, 1))
@@ -492,7 +619,7 @@ def simulate(model, cols, garch, resid, feats, horizon, n_sims, seed):
     rows = []
     X = np.empty((n, len(cols)))
     for h in range(horizon):
-        # Assemble the regressor matrix by feature NAME, in the column order of the fit.
+        # Fill the regressor matrix column by column by feature NAME, in the column order of the fit.
         for j, name in enumerate(cols):
             if name.startswith("r_lag"):
                 X[:, j] = lag_buf[:, int(name[5:]) - 1]
@@ -500,14 +627,14 @@ def simulate(model, cols, garch, resid, feats, horizon, n_sims, seed):
                 X[:, j] = r_hist.std(axis=1, ddof=1)
             else:
                 k = exo.index(name)
-                X[:, j] = last_exo[k] if h == 0 else blocks[:, h, k]
+                X[:, j] = last_exo[k] if h == 0 else hist[starts + h, k]
 
-        # GARCH-t step: variance update, then unit-variance t innovation.
+        # GARCH-t step: update the variance from the previous shock, then draw the new shock.
         s2 = om + al * e_prev ** 2 + be * s2
         e_prev = np.sqrt(s2) * rng.standard_t(nu, size=n) * t_scale
         r_sim = model.predict(X) + e_prev / GARCH_SCALE
 
-        # Ensemble statistics at horizon h+1 (cumulative return is a path sum).
+        # Ensemble statistics at horizon h+1 (the cumulative return is the running path sum).
         cum += r_sim
         q = np.percentile(r_sim, [5, 50, 95])
         qc = np.percentile(cum, [5, 50, 95])
@@ -516,68 +643,132 @@ def simulate(model, cols, garch, resid, feats, horizon, n_sims, seed):
                      "cum_p05": qc[0], "cum_p50": qc[1], "cum_p95": qc[2],
                      "price_p05": price0 * np.exp(qc[0]), "price_p50": price0 * np.exp(qc[1]),
                      "price_p95": price0 * np.exp(qc[2])})
-        # Shift buffers: newest simulated return becomes r_lag1 / last element of r_hist.
+        # Shift the buffers: the newest simulated return becomes r_lag1 and the last element of r_hist.
         lag_buf = np.column_stack([r_sim, lag_buf[:, :-1]])
         r_hist = np.column_stack([r_hist[:, 1:], r_sim])
     return pd.DataFrame(rows)
 
 
 # ------------------------------------------------------------ evaluation
-def walk_forward(X, y, test_window, refit_every):
-    """Expanding-window one-step-ahead out-of-sample predictions.
+def _garch_pit(e, om, al, be, nu, h0, e0, e_in):
+    """One-step predictive-density diagnostics for out-of-sample errors.
 
-    The last `test_window` rows form the test set. For each block of
-    `refit_every` consecutive test rows, a new model (including its
-    cross-validated alpha and rho) is fitted on all rows strictly preceding the
-    block and used to predict the block. Consequently no test-period
-    information enters either the coefficients or the hyperparameters of any
-    prediction. Returns the predictions indexed by test date."""
+    The GARCH-t variance is filtered through the block with FROZEN parameters
+    (om, al, be, nu, in the scaled units of the fit) using only past errors: the
+    variance for the first error is h = om + al e0^2 + be h0, where h0 and e0
+    are the conditional variance and the last residual at the end of the
+    training data; after each observation, h is updated with that observation.
+    If the model's predictive density is correct, the probability integral
+    transform (PIT, the predicted CDF evaluated at the realized value) is
+    uniform on (0,1).
+    Returns, per error: the PIT, the log score of the Student-t density, the log
+    score of a constant-variance Gaussian (variance of the training residuals
+    e_in), and the standardized error z = e / sqrt(h). Errors e and e_in are in
+    original units."""
+    from scipy.stats import norm, t as tdist
+    nu = max(float(nu), 2.05)
+    ts = np.sqrt((nu - 2.0) / nu)
+    x = np.asarray(e, dtype=float) * GARCH_SCALE
+    s0 = float(np.std(e_in)) * GARCH_SCALE
+    hv = np.empty(len(x))                 # sequential variance filter (past errors only)
+    h = om + al * e0 ** 2 + be * h0
+    for i, xi in enumerate(x):
+        hv[i] = h
+        h = om + al * xi ** 2 + be * h
+    z = x / np.sqrt(hv)
+    pit = tdist.cdf(z / ts, nu)
+    ls = tdist.logpdf(z / ts, nu) - np.log(ts) - 0.5 * np.log(hv)
+    ls0 = norm.logpdf(x, scale=s0)
+    return pit, ls, ls0, z
+
+
+def walk_forward(X, y, test_window, refit_every, density=False):
+    """Expanding-window, one-step-ahead out-of-sample predictions.
+
+    The last test_window rows form the test set. For each block of
+    refit_every consecutive test rows, a new model (the weighted estimator
+    fit_weighted, including its cross-validated alpha and rho) is fitted on all
+    rows strictly before the block and used to predict the block. No
+    test-period information therefore enters the coefficients or the
+    hyperparameters of any prediction. Returns the predictions indexed by test
+    date. With density=True the GARCH-t noise model is also re-fitted on the
+    training residuals of every block and filtered through the block (see
+    _garch_pit); the return is then (predictions, pit, log score,
+    constant-variance log score, standardized errors)."""
     n = len(X)
     start = n - test_window
     preds = np.empty(test_window)
+    pit, ls, ls0, z = (np.empty(test_window) for _ in range(4))
     for s in range(0, test_window, refit_every):
         e = min(s + refit_every, test_window)
-        m = make_model().fit(X.iloc[:start + s].values, y.iloc[:start + s].values)
+        Xtr, ytr = X.iloc[:start + s], y.iloc[:start + s]
+        m = fit_weighted(Xtr, ytr)
         preds[s:e] = m.predict(X.iloc[start + s:start + e].values)
-    return pd.Series(preds, index=X.index[start:])
+        if density:
+            r = ytr.values - m.predict(Xtr.values)
+            g, _, _ = fit_garch(pd.Series(r, index=Xtr.index), quiet=True)
+            P = g.params
+            pit[s:e], ls[s:e], ls0[s:e], z[s:e] = _garch_pit(
+                y.iloc[start + s:start + e].values - preds[s:e],
+                P["omega"], P["alpha[1]"], P["beta[1]"], P["nu"],
+                float(g.conditional_volatility[-1]) ** 2, float(r[-1]) * GARCH_SCALE, r)
+    idx = X.index[start:]
+    out = pd.Series(preds, index=idx)
+    if not density:
+        return out
+    return out, pd.Series(pit, index=idx), pd.Series(ls, index=idx), \
+        pd.Series(ls0, index=idx), pd.Series(z, index=idx)
 
 
-def dm_pvalue(err_base, err_alt):
-    """One-sided Diebold-Mariano test of equal squared-error loss.
+def cw_pvalue(y, base, alt):
+    """One-sided Clark-West test of equal squared-error loss for NESTED models.
 
-    Loss differential d_t = e_base(t)^2 - e_alt(t)^2. H0: E[d] = 0;
-    H1: E[d] > 0 (the alternative has lower expected squared error). The
-    statistic is the t-value of the mean of d from a regression on a constant
-    with Newey-West (HAC) covariance, 5 lags, which accounts for serial
-    correlation of d. The p-value is 1 - Phi(t)."""
+    alt nests base. With the adjusted loss differential
+        f_t = (y-b)^2 - [(y-a)^2 - (b-a)^2] = 2 (y-b)(a-b),
+    H0: E[f] = 0 (no extra skill); H1: E[f] > 0 (the larger model forecasts
+    better). The statistic is the t-value of the mean of f from a regression on
+    a constant with Newey-West (HAC) covariance, 5 lags; the p-value is
+    1 - Phi(t). Under H0 the larger model still has a larger squared error,
+    because it estimates coefficients whose true value is zero; the term
+    (b-a)^2 removes exactly that bias. An unadjusted Diebold-Mariano test would
+    therefore be far too conservative for nested models."""
     import statsmodels.api as sm
     from scipy.stats import norm
-    d = np.asarray(err_base) ** 2 - np.asarray(err_alt) ** 2
-    t = sm.OLS(d, np.ones(len(d))).fit(cov_type="HAC", cov_kwds={"maxlags": 5}).tvalues[0]
+    y, b, a = np.asarray(y), np.asarray(base), np.asarray(alt)
+    f = 2.0 * (y - b) * (a - b)
+    if not np.any(f):                     # alternative identical to base: no evidence against H0
+        return 1.0
+    t = sm.OLS(f, np.ones(len(f))).fit(cov_type="HAC", cov_kwds={"maxlags": 5}).tvalues[0]
     return float(1 - norm.cdf(t))
 
 
-def evaluate(feats, sigma_eta):
-    """Out-of-sample accuracy and residual adequacy diagnostics.
+def evaluate(feats):
+    """Out-of-sample accuracy, density calibration and residual adequacy.
 
-    Models compared on the same test dates:
-      zero forecast          r_hat = 0 (random walk in price; null model),
+    Models compared on identical test dates:
+      zero forecast          r_hat = 0 (random walk in price without drift),
+      drift forecast         expanding mean of past r (random walk with drift),
       no-memory elastic net  drives and sigma only (own-lag columns removed),
-      candidate              full VARX-GLE.
+      candidate              the full VARX-GLE.
     Metrics: RMSE, MAE, out-of-sample R2 = 1 - SSE/SSE_zero (positive = better
-    than the zero forecast), hit rate (fraction of correctly signed nonzero
-    forecasts), DM p-value against the zero forecast, and DM p-value of the
-    candidate against the no-memory model (does the memory kernel add skill?).
+    than the zero forecast), and the Clark-West p-value against the zero
+    forecast. Two further Clark-West p-values: candidate vs drift (does it beat
+    a random walk with drift?) and candidate vs the no-memory model (does the
+    memory kernel add skill?).
 
-    Diagnostics on the candidate's out-of-sample errors e(t):
-      Ljung-Box (lags 5, 10) on e: H0 no autocorrelation; rejection means
+    Density. The candidate's one-step predictive density (GARCH-t, filtered out
+    of sample with frozen parameters) is tested by the Kolmogorov-Smirnov test
+    of PIT uniformity. Reported: 5%/95% tail coverage (should be near 0.05 each)
+    and the mean log-score gain over a constant-variance Gaussian.
+
+    Diagnostics on the filtered standardized errors z (they should look like
+    unit-variance white noise):
+      Ljung-Box (lags 5, 10) on z: H0 no autocorrelation; rejection means
           linear temporal dependence remains.
-      ARCH-LM on z = e / sigma_eta: H0 no remaining conditional
-          heteroskedasticity; rejection means GARCH(1,1) is insufficient.
-      CUSUM on demeaned z: H0 parameter stability; rejection indicates drift of
-          the coefficients across the test window.
-    (sigma_eta is the fitted conditional standard deviation from the
-    full-sample noise model, aligned to the error dates.)"""
+      ARCH-LM on z: H0 no remaining conditional heteroskedasticity; rejection
+          means GARCH(1,1) is insufficient.
+      CUSUM on demeaned z: H0 the mean of z is stable over the test window."""
+    from scipy.stats import kstest
     from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch, breaks_cusumolsresid
     X, y = design(feats, cfg.MAX_LAG)
     tw = min(cfg.TEST_WINDOW, len(X) // 2)
@@ -586,59 +777,72 @@ def evaluate(feats, sigma_eta):
     Xn = X[[c for c in X.columns if not c.startswith("r_lag")]]
     actual = y.iloc[-tw:]
 
+    cand, pit, ls, ls0, z = walk_forward(X, y, tw, cfg.REFIT_EVERY, density=True)
     preds = {
         "zero (random walk)": pd.Series(0.0, index=actual.index),
+        "drift (expanding mean)": y.expanding().mean().shift(1).iloc[-tw:],
         "enet, no memory kernel": walk_forward(Xn, y, tw, cfg.REFIT_EVERY),
-        "VARX-GLE (candidate)": walk_forward(X, y, tw, cfg.REFIT_EVERY),
+        "VARX-GLE (candidate)": cand,
     }
     errs = {k: actual - v for k, v in preds.items()}
     sse0 = float((errs["zero (random walk)"] ** 2).sum())
 
     lines = [f"=== WALK-FORWARD (expanding, refit/re-tune every {cfg.REFIT_EVERY}d, last {tw}d) ===",
-             f"{'model':26s} {'RMSE':>10s} {'MAE':>10s} {'R2_oos*':>9s} {'hit':>6s} {'DM p vs 0':>10s}",
-             "(*R2_oos = 1 - SSE/SSE_zero; > 0 means better than a zero forecast)"]
+             f"{'model':26s} {'RMSE':>10s} {'MAE':>10s} {'R2_oos*':>9s} {'CW p vs 0':>10s}",
+             "(*R2_oos = 1 - SSE/SSE_zero; > 0 means better than a zero forecast;",
+             " CW = one-sided Clark-West test for nested models)"]
     metrics = {}
     for k, pr in preds.items():
         e = errs[k]
-        nzp = pr != 0
-        hit = float((np.sign(pr[nzp]) == np.sign(actual[nzp])).mean()) if nzp.any() else float("nan")
         r2 = 1 - float((e ** 2).sum()) / sse0
-        dmp = float("nan") if k.startswith("zero") else dm_pvalue(errs["zero (random walk)"], e)
+        cwp = float("nan") if k.startswith("zero") else cw_pvalue(actual, preds["zero (random walk)"], pr)
         lines.append(f"{k:26s} {np.sqrt((e ** 2).mean()):10.6f} {e.abs().mean():10.6f} "
-                     f"{r2:9.4f} {hit:6.3f} {dmp:10.4f}")
+                     f"{r2:9.4f} {cwp:10.4f}")
         metrics[k] = {"RMSE": float(np.sqrt((e ** 2).mean())), "MAE": float(e.abs().mean()),
-                      "R2_oos_vs_zero": r2, "hit_rate": hit, "DM_p_vs_zero": dmp}
-    dm_mem = dm_pvalue(errs["enet, no memory kernel"], errs["VARX-GLE (candidate)"])
-    lines.append(f"DM p (memory kernel improves on no-memory model): {dm_mem:.4f}")
+                      "R2_oos_vs_zero": r2, "CW_p_vs_zero": cwp}
+    cw_drift = cw_pvalue(actual, preds["drift (expanding mean)"], preds["VARX-GLE (candidate)"])
+    cw_mem = cw_pvalue(actual, preds["enet, no memory kernel"], preds["VARX-GLE (candidate)"])
+    lines.append(f"CW p (candidate improves on drift random walk):     {cw_drift:.4f}")
+    lines.append(f"CW p (memory kernel improves on no-memory model):   {cw_mem:.4f}")
 
-    # Residual diagnostics on the candidate's out-of-sample errors.
-    err = errs["VARX-GLE (candidate)"]
-    sig = sigma_eta.reindex(err.index).ffill().bfill()
-    z = (err / sig).values
-    lb = acorr_ljungbox(err.values, lags=[5, 10], return_df=True)["lb_pvalue"]
-    arch_p = float(het_arch(z)[1])
-    cusum_p = float(breaks_cusumolsresid(z - z.mean())[1])
-    flags = {"residual_autocorrelation": bool((lb < 0.05).any()),
+    # Density calibration (PIT) and residual diagnostics on the filtered standardized errors z.
+    ks_p = float(kstest(pit.values, "uniform").pvalue)
+    cov05, cov95 = float((pit < 0.05).mean()), float((pit > 0.95).mean())
+    dls = float(ls.mean() - ls0.mean())
+    zz = z.values
+    lb = acorr_ljungbox(zz, lags=[5, 10], return_df=True)["lb_pvalue"]
+    arch_p = float(het_arch(zz)[1])
+    cusum_p = float(breaks_cusumolsresid(zz - zz.mean())[1])
+    flags = {"density_miscalibrated": ks_p < 0.05,
+             "residual_autocorrelation": bool((lb < 0.05).any()),
              "garch_insufficient": arch_p < 0.05,
-             "parameter_instability": cusum_p < 0.05}
-    lines += ["", "=== RESIDUAL DIAGNOSTICS (candidate OOS errors) ===",
-              f"Ljung-Box p (lag 5, 10): {lb.round(4).tolist()}"
+             "standardized_error_mean_shift": cusum_p < 0.05}
+    lines += ["", "=== ONE-STEP PREDICTIVE DENSITY (candidate, OOS, GARCH-t refit and filtered per block) ===",
+              f"PIT uniformity, KS p: {ks_p:.4f}"
+              f"{'  -> density miscalibrated' if flags['density_miscalibrated'] else ''}",
+              f"Tail coverage: P(PIT<5%) = {cov05:.3f}, P(PIT>95%) = {cov95:.3f}  (nominal 0.050)",
+              f"Mean log-score gain over constant-variance Gaussian: {dls:+.4f}",
+              "", "=== DIAGNOSTICS (filtered standardized OOS errors z) ===",
+              f"Ljung-Box p on z (lag 5, 10): {lb.round(4).tolist()}"
               f"{'  -> autocorrelation remains' if flags['residual_autocorrelation'] else ''}",
-              f"ARCH-LM p on GARCH-standardized errors: {arch_p:.4f}"
+              f"ARCH-LM p on z: {arch_p:.4f}"
               f"{'  -> GARCH(1,1) insufficient' if flags['garch_insufficient'] else ''}",
-              f"CUSUM p (standardized errors): {cusum_p:.4f}"
-              f"{'  -> parameter instability; shorten REFIT_EVERY' if flags['parameter_instability'] else ''}"]
+              f"CUSUM p (mean of z): {cusum_p:.4f}"
+              f"{'  -> mean of standardized errors shifts over the test window' if flags['standardized_error_mean_shift'] else ''}"]
     report = "\n".join(lines)
     print(report)
     _p("evaluation_report.txt").write_text(report)
-    return {"test_window": int(tw), "metrics": metrics, "DM_p_memory_vs_nomemory": dm_mem,
+    return {"test_window": int(tw), "metrics": metrics,
+            "CW_p_candidate_vs_drift": cw_drift, "CW_p_memory_vs_nomemory": cw_mem,
+            "density": {"ks_p": ks_p, "cover_p05": cov05, "cover_p95": cov95,
+                        "log_score_gain_vs_const_gauss": dls},
             "ljung_box_p": {str(k): float(v) for k, v in lb.items()},
             "arch_lm_p": arch_p, "cusum_p": cusum_p, "flags": flags}
 
 
 # ------------------------------------------------------------------ main
 def parse_args():
-    # Command-line interface; every option except the file paths overrides an entry of cfg.
+    # Command-line interface. Every option except the file paths overrides the matching entry of cfg.
     ap = argparse.ArgumentParser(description="Minimal GLE/VARX currency pipeline",
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument("--csv", default="usd_inr.csv")
@@ -655,7 +859,7 @@ def parse_args():
 
 
 def _json(o):
-    # JSON serializer for numpy scalar types appearing in the summary dictionary.
+    # JSON serializer for the numpy scalar types that appear in the summary dictionary.
     if isinstance(o, np.integer):
         return int(o)
     if isinstance(o, np.floating):
@@ -665,12 +869,24 @@ def _json(o):
     return str(o)
 
 
+def _clean(o):
+    # Recursively map NaN/inf to None so that the summary is strictly valid JSON.
+    if isinstance(o, dict):
+        return {k: _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if isinstance(o, (float, np.floating)):
+        return None if not np.isfinite(o) else float(o)
+    return o
+
+
 def main():
     """Run the pipeline end to end.
 
-    Order: data -> state and drives -> ADF stationarity check -> elastic-net
-    estimation (K, Omega, c) -> GARCH-t noise model -> Monte Carlo forecast ->
-    walk-forward evaluation (optional) -> persistence of model and summary."""
+    Order: data -> observed state and drives -> ADF stationarity check ->
+    weighted elastic-net estimation (K, Omega, c) -> GARCH-t noise model ->
+    Monte Carlo forecast -> walk-forward evaluation (optional) -> saving of
+    the model and the summary."""
     global OUT
     a = parse_args()
     # Command-line values replace the corresponding cfg entries.
@@ -714,17 +930,17 @@ def main():
                "simulation": {"horizon": cfg.HORIZON, "n_sims": cfg.N_SIMS,
                               "cum_logret_p05_p50_p95": [last.cum_p05, last.cum_p50, last.cum_p95]}}
     if not a.skip_eval:
-        summary["evaluation"] = evaluate(feats, sigma_eta)
+        summary["evaluation"] = evaluate(feats)
 
-    # Persist the fitted objects needed to reproduce a forecast, and the summary.
+    # Save the fitted objects needed to reproduce a forecast, and the summary.
     with open(_p("model.pkl"), "wb") as f:
         pickle.dump({"model": model, "features": cols, "p": cfg.MAX_LAG,
                      "garch_params": dict(garch.params), "cfg": vars(cfg)}, f)
     summary["runtime_seconds"] = round(time.time() - t0, 1)
     with open(_p("pipeline_summary.json"), "w") as f:
-        json.dump(summary, f, indent=2, default=_json)
+        json.dump(_clean(summary), f, indent=2, default=_json, allow_nan=False)
     print(f"\n[done] {summary['runtime_seconds']}s -> {OUT.resolve()}")
 
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     sys.exit(main())
